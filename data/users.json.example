@@ -1,0 +1,20 @@
+{
+  "users": [
+    {
+      "telegram_id": 237960664,
+      "username": "dasha140501",
+      "status": "manager"
+    },
+    {
+      "telegram_id": 313629812,
+      "username": "glittersonly",
+      "status": "worker"
+    },
+    {
+      "telegram_id": 8003822209,
+      "username": "ASAP_Serg77",
+      "status": "manager"
+    }
+  ]
+}
+
