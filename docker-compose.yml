@@ -1,0 +1,18 @@
+services:
+  bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: bot-otchet
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      # Монтируем директорию data для сохранения данных между перезапусками
+      - ./data:/app/data
+    environment:
+      - PYTHONUNBUFFERED=1
+    # Если нужен доступ к X11 для отладки (необязательно)
+    # network_mode: host
+    # Для headless режима это не нужно
+

@@ -1,3 +1,39 @@
+# Bot-stats - Telegram Bot for Collection Reports
+
+## Docker запуск
+
+### Быстрый старт
+
+1. Скопируйте `.env.example` в `.env` и заполните все необходимые переменные:
+```bash
+cp .env.example .env
+# Отредактируйте .env файл
+```
+
+2. Запустите через Docker Compose:
+```bash
+docker-compose up -d
+```
+
+3. Просмотр логов:
+```bash
+docker-compose logs -f
+```
+
+4. Остановка:
+```bash
+docker-compose down
+```
+
+### Сборка образа вручную
+
+```bash
+docker build -t bot-otchet .
+docker run -d --name bot-otchet --env-file .env -v $(pwd)/data:/app/data bot-otchet
+```
+
+## Локальный запуск
+
 # Bot-stats - Бот для отслеживания статусов коллекций и генерации отчетов
 
 Бот для автоматического отслеживания статусов коллекций в BigQuery и генерации отчетов через Selenium.

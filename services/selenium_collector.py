@@ -1,5 +1,7 @@
 import time
 import logging
+import json
+from pathlib import Path
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
@@ -35,6 +37,11 @@ class SeleniumCollector:
         self.password = password
         self.driver = None
         self.wait = None
+        # Путь к файлу cookies (в Docker - /app/data, локально - ./data)
+        if sys.platform == 'win32' or not Path("/app").exists():
+            self.cookies_file = Path("data/google_cookies.json")
+        else:
+            self.cookies_file = Path("/app/data/google_cookies.json")
         self._init_driver()
     
     def _init_driver(self):
@@ -46,14 +53,25 @@ class SeleniumCollector:
             if sys.platform == 'win32':
                 chrome_options.add_argument('--start-maximized')
             else:
-                # Для Linux можно использовать headless
-                chrome_options.add_argument('--headless')
+                # Для Linux НЕ используем headless, так как Google может блокировать
+                # Вместо этого используем виртуальный дисплей (Xvfb)
+                # chrome_options.add_argument('--headless')  # Отключаем headless
                 chrome_options.add_argument('--no-sandbox')
                 chrome_options.add_argument('--disable-dev-shm-usage')
+                chrome_options.add_argument('--disable-gpu')
+                chrome_options.add_argument('--window-size=1920,1080')
             
+            # Опции для обхода детекции автоматизации
             chrome_options.add_argument('--disable-blink-features=AutomationControlled')
-            chrome_options.add_experimental_option('excludeSwitches', ['enable-logging'])
+            chrome_options.add_experimental_option('excludeSwitches', ['enable-logging', 'enable-automation'])
             chrome_options.add_experimental_option('useAutomationExtension', False)
+            
+            # Добавляем user agent для обхода детекции
+            chrome_options.add_argument('--user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36')
+            
+            # Отключаем флаги автоматизации
+            chrome_options.add_argument('--disable-infobars')
+            chrome_options.add_argument('--disable-extensions')
             
             # Используем webdriver-manager для автоматической установки драйвера
             try:
@@ -65,11 +83,48 @@ class SeleniumCollector:
                 self.driver = webdriver.Chrome(options=chrome_options)
             
             self.wait = WebDriverWait(self.driver, 30)
+            
             logger.info("Selenium driver initialized successfully")
+            
+            # Пробуем загрузить сохраненные cookies (только если файл существует)
+            # Не загружаем при первом запуске save_cookies.py
+            if self.cookies_file.exists():
+                try:
+                    self._load_cookies()
+                except Exception as e:
+                    logger.warning(f"Could not load cookies (will try to login normally): {e}")
             
         except Exception as e:
             logger.error(f"Failed to initialize Selenium driver: {e}")
             raise
+    
+    def _load_cookies(self):
+        """Загружает сохраненные cookies Google, если они есть"""
+        try:
+            if self.cookies_file.exists():
+                with open(self.cookies_file, 'r', encoding='utf-8') as f:
+                    cookies = json.load(f)
+                    # Переходим на Google, чтобы установить cookies
+                    self.driver.get("https://accounts.google.com")
+                    for cookie in cookies:
+                        try:
+                            self.driver.add_cookie(cookie)
+                        except:
+                            pass
+                    logger.info(f"Loaded {len(cookies)} cookies from file")
+        except Exception as e:
+            logger.debug(f"Could not load cookies: {e}")
+    
+    def _save_cookies(self):
+        """Сохраняет cookies Google для повторного использования"""
+        try:
+            cookies = self.driver.get_cookies()
+            self.cookies_file.parent.mkdir(parents=True, exist_ok=True)
+            with open(self.cookies_file, 'w', encoding='utf-8') as f:
+                json.dump(cookies, f, indent=2)
+            logger.info(f"Saved {len(cookies)} cookies to file")
+        except Exception as e:
+            logger.warning(f"Could not save cookies: {e}")
     
     def login(self) -> bool:
         """
@@ -84,6 +139,47 @@ class SeleniumCollector:
             from selenium.webdriver.common.action_chains import ActionChains
             
             logger.info("Logging in to Mosaica...")
+            
+            # Сначала пробуем использовать сохраненные cookies
+            if self.cookies_file.exists():
+                try:
+                    logger.info("Trying to use saved cookies...")
+                    # Переходим на Мозаику
+                    self.driver.get(MOSAICA_URL)
+                    time.sleep(2)
+                    
+                    # Загружаем cookies для Мозаики
+                    with open(self.cookies_file, 'r', encoding='utf-8') as f:
+                        cookies = json.load(f)
+                    
+                    # Устанавливаем cookies для домена mosaica.ai
+                    for cookie in cookies:
+                        try:
+                            cookie_copy = cookie.copy()
+                            cookie_copy.pop('sameSite', None)
+                            cookie_copy.pop('expiry', None)
+                            # Устанавливаем домен, если нужно
+                            if 'domain' in cookie_copy and 'mosaica.ai' not in cookie_copy.get('domain', ''):
+                                cookie_copy['domain'] = '.mosaica.ai'
+                            self.driver.add_cookie(cookie_copy)
+                        except:
+                            pass
+                    
+                    # Обновляем страницу
+                    self.driver.refresh()
+                    time.sleep(3)
+                    
+                    # Проверяем, авторизованы ли мы
+                    current_url = self.driver.current_url
+                    if "mosaica.ai" in current_url.lower() and "accounts.google.com" not in current_url.lower() and "login" not in current_url.lower():
+                        logger.info("Successfully logged in using saved cookies!")
+                        self._handle_chrome_signin_modal()
+                        return True
+                    else:
+                        logger.info("Cookies didn't work, proceeding with normal login...")
+                except Exception as e:
+                    logger.warning(f"Could not use saved cookies: {e}, proceeding with normal login...")
+            
             # Переходим на главную страницу Мозаики (не /login)
             self.driver.get(MOSAICA_URL)
             logger.info(f"Opened {MOSAICA_URL}")
@@ -214,53 +310,230 @@ class SeleniumCollector:
                         email_field.send_keys(Keys.RETURN)
                         time.sleep(2)
                     
-                    # Ищем поле пароля
+                    # Ищем поле пароля (с более длительным ожиданием)
+                    # Google может показывать поле пароля с задержкой после ввода email
+                    logger.info("Waiting for password field to appear...")
+                    time.sleep(3)  # Увеличиваем время ожидания
+                    
                     password_selectors = [
                         (By.CSS_SELECTOR, 'input[type="password"]'),
                         (By.CSS_SELECTOR, 'input[name="password"]'),
+                        (By.CSS_SELECTOR, 'input[name="Passwd"]'),
+                        (By.ID, 'password'),
+                        (By.ID, 'Passwd'),
+                        (By.NAME, 'password'),
+                        (By.NAME, 'Passwd'),
+                        (By.XPATH, '//input[@type="password"]'),
+                        (By.XPATH, '//input[contains(@name, "password") or contains(@name, "Passwd")]'),
+                        (By.XPATH, '//input[@autocomplete="current-password"]'),
                     ]
                     
                     password_field = None
-                    for by, selector in password_selectors:
-                        try:
-                            password_field = self.wait.until(EC.presence_of_element_located((by, selector)))
+                    # Пробуем найти поле пароля с увеличенным таймаутом
+                    max_attempts = 3
+                    for attempt in range(max_attempts):
+                        for by, selector in password_selectors:
+                            try:
+                                # Увеличиваем таймаут до 15 секунд
+                                password_field = WebDriverWait(self.driver, 15).until(
+                                    EC.presence_of_element_located((by, selector))
+                                )
+                                # Проверяем, что элемент видим
+                                if password_field.is_displayed():
+                                    logger.info(f"Found password field using selector: {selector} (attempt {attempt + 1})")
+                                    break
+                            except Exception as e:
+                                logger.debug(f"Password field not found with selector {selector} (attempt {attempt + 1}): {e}")
+                                continue
+                        
+                        if password_field:
                             break
-                        except:
-                            continue
+                        
+                        if attempt < max_attempts - 1:
+                            logger.info(f"Password field not found, waiting 3 more seconds (attempt {attempt + 1}/{max_attempts})...")
+                            time.sleep(3)
                     
-                    if password_field:
-                        if not self.password:
-                            logger.error("Password is not set!")
-                            return False
-                        password_field.clear()
-                        password_field.send_keys(self.password)
-                        logger.info("Password entered")
-                        time.sleep(1)
-                        
-                        # Ищем кнопку "Далее" или "Next" для пароля
+                    # Если все еще не найдено, пробуем через JavaScript
+                    if not password_field:
+                        logger.info("Trying to find password field via JavaScript...")
                         try:
-                            next_button = self.driver.find_element(By.XPATH, '//button[contains(., "Далее") or contains(., "Next")]')
-                            next_button.click()
+                            password_field = self.driver.execute_script("""
+                                var inputs = document.querySelectorAll('input[type="password"]');
+                                for (var i = 0; i < inputs.length; i++) {
+                                    if (inputs[i].offsetParent !== null) {
+                                        return inputs[i];
+                                    }
+                                }
+                                return null;
+                            """)
+                            if password_field:
+                                logger.info("Found password field via JavaScript")
                         except:
+                            pass
+                    
+                    if not password_field:
+                        logger.error("Password field not found after waiting")
+                        # Пробуем найти все input элементы для отладки
+                        try:
+                            all_inputs = self.driver.find_elements(By.TAG_NAME, "input")
+                            logger.debug(f"Found {len(all_inputs)} input elements on page")
+                            for inp in all_inputs[:5]:  # Показываем только первые 5
+                                try:
+                                    inp_type = inp.get_attribute("type")
+                                    inp_name = inp.get_attribute("name")
+                                    inp_id = inp.get_attribute("id")
+                                    logger.debug(f"Input: type={inp_type}, name={inp_name}, id={inp_id}")
+                                except:
+                                    pass
+                        except:
+                            pass
+                        return False
+                    
+                    if not self.password:
+                        logger.error("Password is not set!")
+                        return False
+                    
+                    # Прокручиваем к элементу
+                    try:
+                        self.driver.execute_script("arguments[0].scrollIntoView({block: 'center', behavior: 'smooth'});", password_field)
+                        time.sleep(0.5)
+                    except:
+                        pass
+                    
+                    # Пробуем очистить и ввести пароль
+                    try:
+                        password_field.clear()
+                    except:
+                        # Если clear не работает, используем JavaScript
+                        self.driver.execute_script("arguments[0].value = '';", password_field)
+                    
+                    # Вводим пароль
+                    try:
+                        password_field.send_keys(self.password)
+                        logger.info("Password entered via send_keys")
+                    except Exception as e:
+                        logger.warning(f"send_keys failed: {e}, trying JavaScript")
+                        # Если обычный ввод не работает, используем JavaScript
+                        self.driver.execute_script("arguments[0].value = arguments[1];", password_field, self.password)
+                        # Триггерим события для активации валидации
+                        self.driver.execute_script("""
+                            arguments[0].dispatchEvent(new Event('input', { bubbles: true }));
+                            arguments[0].dispatchEvent(new Event('change', { bubbles: true }));
+                        """, password_field)
+                        logger.info("Password entered via JavaScript")
+                    
+                    time.sleep(1)
+                    
+                    # Ищем кнопку "Далее" или "Next" для пароля
+                    try:
+                        next_button = self.wait.until(
+                            EC.element_to_be_clickable((By.XPATH, '//button[contains(., "Далее") or contains(., "Next")]'))
+                        )
+                        # Прокручиваем к кнопке
+                        self.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", next_button)
+                        time.sleep(0.5)
+                        next_button.click()
+                        logger.info("Clicked Next button")
+                    except Exception as e:
+                        logger.warning(f"Next button not found: {e}, trying Enter")
+                        # Если кнопка не найдена, пробуем Enter
+                        try:
                             password_field.send_keys(Keys.RETURN)
-                        
-                        time.sleep(5)
-                        
-                        # Проверяем успешность входа
+                            logger.info("Pressed Enter")
+                        except:
+                            # Если и это не работает, используем JavaScript
+                            self.driver.execute_script("arguments[0].form.submit();", password_field)
+                            logger.info("Submitted form via JavaScript")
+                    
+                    time.sleep(5)
+                    
+                    # Проверяем текущий URL и обрабатываем разные сценарии
+                    current_url = self.driver.current_url
+                    logger.info(f"Current URL after password: {current_url[:100]}...")
+                    
+                    # Обрабатываем challenge страницу (если Google требует дополнительную проверку)
+                    max_redirect_attempts = 5
+                    for attempt in range(max_redirect_attempts):
                         current_url = self.driver.current_url
+                        logger.info(f"Redirect attempt {attempt + 1}/{max_redirect_attempts}, URL: {current_url[:100]}...")
+                        
+                        # Если мы на странице Мозаики - успех!
                         if "mosaica.ai" in current_url.lower() and "accounts.google.com" not in current_url.lower():
                             logger.info("Login successful!")
+                            # Сохраняем cookies для следующего раза
+                            self._save_cookies()
+                            # Обрабатываем модальное окно Chrome "Войти в Chrome?" если оно появилось
+                            self._handle_chrome_signin_modal()
                             return True
-                        else:
-                            logger.warning(f"Still on Google page: {current_url}")
-                            # Даем еще время на редирект
-                            time.sleep(5)
-                            current_url = self.driver.current_url
-                            if "mosaica.ai" in current_url.lower() and "accounts.google.com" not in current_url.lower():
-                                logger.info("Login successful after wait!")
-                                return True
+                        
+                        # Если на странице согласия (consent)
+                        if "consent" in current_url.lower():
+                            logger.info("Google consent page detected, looking for Allow/Разрешить button...")
+                            try:
+                                # Ищем кнопку "Разрешить" или "Allow"
+                                consent_button_selectors = [
+                                    (By.XPATH, '//button[contains(., "Разрешить") or contains(., "Allow")]'),
+                                    (By.XPATH, '//button[contains(., "Продолжить") or contains(., "Continue")]'),
+                                    (By.ID, 'submit_approve_access'),
+                                    (By.CSS_SELECTOR, 'button[type="submit"]'),
+                                    (By.XPATH, '//div[@role="button" and (contains(., "Разрешить") or contains(., "Allow"))]'),
+                                ]
+                                
+                                for by, selector in consent_button_selectors:
+                                    try:
+                                        consent_button = WebDriverWait(self.driver, 5).until(
+                                            EC.element_to_be_clickable((by, selector))
+                                        )
+                                        if consent_button and consent_button.is_displayed():
+                                            logger.info(f"Found consent button: {selector}, clicking...")
+                                            self.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", consent_button)
+                                            time.sleep(0.5)
+                                            self.driver.execute_script("arguments[0].click();", consent_button)
+                                            logger.info("Clicked consent button")
+                                            time.sleep(5)
+                                            break
+                                    except:
+                                        continue
+                            except Exception as e:
+                                logger.warning(f"Error handling consent page: {e}")
+                        
+                        # Если на странице challenge (дополнительная проверка)
+                        elif "challenge" in current_url.lower():
+                            logger.warning("Google challenge page detected - may require 2FA or additional verification")
+                            # Пробуем найти и обработать challenge
+                            try:
+                                # Ищем кнопки "Попробовать другой способ" или "Try another way"
+                                challenge_selectors = [
+                                    (By.XPATH, '//button[contains(., "Попробовать другой способ") or contains(., "Try another way")]'),
+                                    (By.XPATH, '//a[contains(., "Попробовать другой способ") or contains(., "Try another way")]'),
+                                ]
+                                
+                                for by, selector in challenge_selectors:
+                                    try:
+                                        challenge_link = self.driver.find_element(by, selector)
+                                        if challenge_link.is_displayed():
+                                            logger.info("Found 'Try another way' link, clicking...")
+                                            self.driver.execute_script("arguments[0].click();", challenge_link)
+                                            time.sleep(3)
+                                            break
+                                    except:
+                                        continue
+                            except Exception as e:
+                                logger.warning(f"Error handling challenge page: {e}")
+                            
+                            # Если challenge требует ввода кода или другого действия, это проблема
+                            logger.error("Google requires additional verification (2FA/challenge) - cannot proceed automatically")
+                            return False
+                        
+                        # Ждем редирект
+                        time.sleep(5)
+                    
+                    # Если после всех попыток все еще на Google
+                    current_url = self.driver.current_url
+                    logger.warning(f"Still on Google page after {max_redirect_attempts} attempts: {current_url[:200]}")
+                    return False
                 
-                logger.error("Could not complete Google login")
+                logger.error("Could not complete Google login - password field not found or login failed")
                 return False
             
             # Если мы все еще на главной странице, возможно нужно подождать
@@ -268,6 +541,8 @@ class SeleniumCollector:
             current_url = self.driver.current_url
             if "mosaica.ai" in current_url.lower() and "accounts.google.com" not in current_url.lower() and "login" not in current_url.lower():
                 logger.info("Login successful!")
+                # Сохраняем cookies для следующего раза
+                self._save_cookies()
                 # Обрабатываем модальное окно Chrome "Войти в Chrome?" если оно появилось
                 self._handle_chrome_signin_modal()
                 return True

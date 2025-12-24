@@ -1,0 +1,22 @@
+[
+  {
+    "domain": ".mosaica.ai",
+    "expiry": 1769180265,
+    "httpOnly": false,
+    "name": "user_id",
+    "path": "/",
+    "sameSite": "Lax",
+    "secure": false,
+    "value": "521d47e6-27ec-43e8-8ac1-5725db83a69a"
+  },
+  {
+    "domain": ".mosaica.ai",
+    "expiry": 1769180262,
+    "httpOnly": true,
+    "name": "session",
+    "path": "/",
+    "sameSite": "Lax",
+    "secure": true,
+    "value": "eyJhbGciOiJIUzI1NiJ9.eyJwcm92aWRlciI6Imdvb2dsZSIsInN1YiI6IjEwNjE3NjYzNjU3NTA5ODM0MTk4OCIsImVtYWlsIjoic2JAZHJlc3Njb2RlLmFpIiwibmFtZSI6ItCh0LXRgNCz0LXQuSDQkdC-0L3QtNCw0YDQtdCyIiwicGljdHVyZSI6Imh0dHBzOi8vbGgzLmdvb2dsZXVzZXJjb250ZW50LmNvbS9hL0FDZzhvY0lsQnFaY3ZQMm55Z0oxaC1Hcl9kenlKb0kySXB2MHBOYTJuTkdDU1B6OWhocHlidz1zOTYtYyIsImlhdCI6MTc2NjU4ODI2MiwiZXhwIjoxNzY5MTgwMjYyfQ.MFHDRCBxPWHiX46qeyO8PxNXjvE1aXwYStl6ig1ux30"
+  }
+]
