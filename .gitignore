@@ -37,6 +37,7 @@ wheels/
 # Logs
 logs/
 *.log
+bot_stats*.log
 
 # Data files
 data/chats.json

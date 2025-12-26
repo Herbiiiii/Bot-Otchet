@@ -4,7 +4,9 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 # Загружаем переменные окружения
-load_dotenv()
+# Используем override=False чтобы не перезаписывать уже установленные переменные
+# и не интерпретировать $ как переменные (Docker Compose уже это сделал)
+load_dotenv(override=False)
 
 # Telegram Bot
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')

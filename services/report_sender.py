@@ -57,15 +57,16 @@ class ReportSender:
                     collection_name = report.get('collection_name', 'Без названия')
                 
                 # Формируем ссылку
-                collection_url = f"https://catalog.dresscode.ai/collection/{collection_id}"
-                if report.get('collection_url') and 'tsum.ru' not in report.get('collection_url', '').lower():
-                    collection_url = report['collection_url']
+                collection_url = f"https://admin.dresscode.ai/collection/{collection_id}"
                 
-                # Формируем сообщение
+                # Формируем сообщение с HTML форматированием для кликабельной ссылки
+                # Экранируем специальные символы HTML в названии коллекции и делаем жирным
+                from html import escape
+                escaped_name = escape(collection_name)
                 message = "Добрый вечер!\n"
                 message += "\n"
-                message += f"Направляем пак {collection_name}\n"
-                message += f"{collection_url}\n"
+                message += f"Направляем пак <b>{escaped_name}</b>\n"
+                message += f"<a href=\"{collection_url}\">{collection_url}</a>\n"
                 message += "\n"
                 
                 # Добавляем статистику
@@ -94,7 +95,8 @@ class ReportSender:
                     try:
                         await self.bot.send_message(
                             chat_id=int(chat_id),
-                            text=message
+                            text=message,
+                            parse_mode='HTML'
                         )
                         logger.info(f"Report sent to chat {chat_id}")
                     except Exception as e:

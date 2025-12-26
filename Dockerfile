@@ -84,10 +84,25 @@ ENV DISPLAY=:99
 
 # Создаем скрипт для запуска Xvfb и бота
 RUN echo '#!/bin/bash\n\
-Xvfb :99 -screen 0 1920x1080x24 -ac +extension GLX +render -noreset &\n\
+# Удаляем старые lock-файлы Xvfb\n\
+rm -f /tmp/.X99-lock /tmp/.X11-unix/X99\n\
+# Убиваем старые процессы Xvfb, если они есть\n\
+pkill -9 Xvfb 2>/dev/null || true\n\
+sleep 1\n\
+# Запускаем Xvfb\n\
+Xvfb :99 -screen 0 1920x1080x24 -ac +extension GLX +render -noreset >/dev/null 2>&1 &\n\
 export DISPLAY=:99\n\
-fluxbox &\n\
 sleep 2\n\
+# Запускаем fluxbox (подавляем вывод предупреждений)\n\
+fluxbox >/dev/null 2>&1 &\n\
+sleep 2\n\
+# Проверяем, что Xvfb запустился\n\
+if ! pgrep -x Xvfb > /dev/null; then\n\
+    echo "ERROR: Xvfb failed to start"\n\
+    exit 1\n\
+fi\n\
+echo "Xvfb started successfully"\n\
+# Запускаем бота\n\
 exec python bot.py' > /app/start.sh && chmod +x /app/start.sh
 
 # Команда по умолчанию

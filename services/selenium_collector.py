@@ -1,6 +1,7 @@
 import time
 import logging
 import json
+import os
 from pathlib import Path
 from selenium import webdriver
 from selenium.webdriver.common.by import By
@@ -42,7 +43,53 @@ class SeleniumCollector:
             self.cookies_file = Path("data/google_cookies.json")
         else:
             self.cookies_file = Path("/app/data/google_cookies.json")
+        
+        # Очищаем зависшие процессы Chrome перед инициализацией (только в Linux)
+        if sys.platform != 'win32':
+            self._cleanup_stale_chrome_processes()
+        
         self._init_driver()
+    
+    def _cleanup_stale_chrome_processes(self):
+        """Очищает зависшие процессы Chrome перед инициализацией нового браузера"""
+        try:
+            import subprocess
+            import time
+            # Проверяем, есть ли процессы Chrome
+            result = subprocess.run(['ps', 'aux'], 
+                                  capture_output=True, 
+                                  text=True,
+                                  timeout=2)
+            if result.returncode == 0:
+                chrome_processes = [line for line in result.stdout.split('\n') 
+                                  if 'chrome' in line.lower() and 'grep' not in line.lower()]
+                # Очищаем только если процессов много (более 5) - это явно зависшие
+                # Если процессов мало, возможно они еще закрываются
+                if len(chrome_processes) > 5:
+                    logger.info(f"Found {len(chrome_processes)} stale Chrome processes (>{5}), cleaning up...")
+                    # Более мягкое закрытие сначала
+                    subprocess.run(['pkill', '-TERM', '-f', 'chrome'], 
+                                 capture_output=True, 
+                                 timeout=2,
+                                 check=False)
+                    time.sleep(1)  # Даем время на корректное закрытие
+                    # Только если процессы остались - убиваем принудительно
+                    result2 = subprocess.run(['ps', 'aux'], 
+                                            capture_output=True, 
+                                            text=True,
+                                            timeout=2)
+                    if result2.returncode == 0:
+                        remaining = [line for line in result2.stdout.split('\n') 
+                                    if 'chrome' in line.lower() and 'grep' not in line.lower()]
+                        if len(remaining) > 5:
+                            logger.warning(f"Still {len(remaining)} Chrome processes, forcing kill...")
+                            subprocess.run(['pkill', '-9', '-f', 'chrome'], 
+                                         capture_output=True, 
+                                         timeout=2,
+                                         check=False)
+                            time.sleep(0.5)
+        except Exception as e:
+            logger.debug(f"Could not cleanup stale Chrome processes: {e}")
     
     def _init_driver(self):
         """Инициализация Chrome драйвера"""
@@ -60,6 +107,14 @@ class SeleniumCollector:
                 chrome_options.add_argument('--disable-dev-shm-usage')
                 chrome_options.add_argument('--disable-gpu')
                 chrome_options.add_argument('--window-size=1920,1080')
+                # Дополнительные опции для стабильности
+                chrome_options.add_argument('--disable-software-rasterizer')
+                chrome_options.add_argument('--disable-background-timer-throttling')
+                chrome_options.add_argument('--disable-backgrounding-occluded-windows')
+                chrome_options.add_argument('--disable-renderer-backgrounding')
+                # Убеждаемся, что DISPLAY установлен
+                if 'DISPLAY' not in os.environ:
+                    os.environ['DISPLAY'] = ':99'
             
             # Опции для обхода детекции автоматизации
             chrome_options.add_argument('--disable-blink-features=AutomationControlled')
@@ -73,13 +128,30 @@ class SeleniumCollector:
             chrome_options.add_argument('--disable-infobars')
             chrome_options.add_argument('--disable-extensions')
             
+            # Проверяем доступность виртуального дисплея перед инициализацией
+            if sys.platform != 'win32':
+                # Проверяем, что Xvfb запущен
+                import subprocess
+                try:
+                    xvfb_check = subprocess.run(['ps', 'aux'], 
+                                              capture_output=True, 
+                                              text=True,
+                                              timeout=2)
+                    if xvfb_check.returncode == 0 and 'xvfb' not in xvfb_check.stdout.lower():
+                        logger.warning("Xvfb not found, Chrome may not work properly")
+                except:
+                    pass
+            
             # Используем webdriver-manager для автоматической установки драйвера
             try:
                 driver_path = ChromeDriverManager().install()
                 service = Service(driver_path)
+                # Добавляем небольшую задержку перед инициализацией для стабильности
+                time.sleep(0.5)
                 self.driver = webdriver.Chrome(service=service, options=chrome_options)
             except Exception as e:
                 logger.warning(f"Error with webdriver-manager: {e}, trying system ChromeDriver")
+                time.sleep(0.5)
                 self.driver = webdriver.Chrome(options=chrome_options)
             
             self.wait = WebDriverWait(self.driver, 30)
@@ -1043,9 +1115,8 @@ class SeleniumCollector:
     def get_collection_report(self, collection_id: str) -> Optional[Dict]:
         """
         Собирает отчет по коллекции из Мозаики
-        Логика: переход в Showoff -> поиск по ID -> клик на коллекцию -> 
-        открыть редактирование -> получить статистику -> 
-        снова клик на коллекцию -> клик на saas -> получить ссылку
+        Логика: переход в Showoff -> поиск по ID -> 
+        открыть редактирование -> получить статистику
         
         Args:
             collection_id: ID коллекции
@@ -1173,198 +1244,15 @@ class SeleniumCollector:
                 logger.error(traceback.format_exc())
                 return None
             
-            # 5. Теперь кликаем на коллекцию (чтобы открыть её содержимое и подготовиться к клику на saas)
-            logger.info("Closing edit form and opening collection...")
-            if not self.click_collection(collection_id):
-                logger.warning("Failed to click on collection, trying to find saas button anyway...")
+            # 5. Статистика собрана, сразу закрываем браузер
+            logger.info("Stats collected, closing browser...")
+            self.close()
             
-            time.sleep(2)
+            # 6. Формируем ссылку на коллекцию из ID (ID уже есть, браузер не нужен)
+            collection_link = f"https://admin.dresscode.ai/collection/{collection_id}"
+            logger.info(f"Generated collection link: {collection_link}")
             
-            # 6. Кликаем на кнопку "saas" и получаем ссылку
-            if not self.search_collection_by_id(collection_id):
-                logger.warning("Failed to search collection again, trying to click anyway...")
-            
-            if not self.click_collection(collection_id):
-                logger.warning("Failed to click collection again, trying to find saas button anyway...")
-            
-            time.sleep(2)
-            
-            # 6. Получаем ссылку из кнопки "saas" (БЕЗ клика)
-            collection_link = None
-            try:
-                # Ищем кнопку "saas" (id="so_collection_link")
-                link_button = self.wait.until(
-                    EC.presence_of_element_located((By.ID, "so_collection_link"))
-                )
-                logger.info("Found 'saas' button, extracting link...")
-                
-                # Пробуем получить ссылку через JavaScript функцию so_go_collection_link
-                # но без фактического клика - просто получаем результат функции
-                try:
-                    # Пробуем получить ссылку через JavaScript
-                    link_url = self.driver.execute_script("""
-                        var collectionId = arguments[0];
-                        // Пробуем получить ссылку из данных коллекции
-                        try {
-                            // Ищем коллекцию в данных
-                            if (typeof window.collections_data !== 'undefined' && window.collections_data) {
-                                var collection = window.collections_data.find(function(c) {
-                                    return c.id === collectionId;
-                                });
-                                if (collection && collection.link) {
-                                    return collection.link;
-                                }
-                            }
-                            
-                            // Пробуем получить из элемента коллекции
-                            var collectionLi = document.querySelector('li[data-id="' + collectionId + '"]');
-                            if (collectionLi) {
-                                var linkData = collectionLi.getAttribute('data-link') || 
-                                             collectionLi.getAttribute('data-url') ||
-                                             collectionLi.getAttribute('data-collection-link');
-                                if (linkData) {
-                                    return linkData;
-                                }
-                            }
-                            
-                            // Пробуем вызвать функцию и перехватить результат
-                            // Но это может не сработать, так как функция может открывать новое окно
-                            // Поэтому пробуем другой способ - получить из onclick
-                        } catch(e) {
-                            return null;
-                        }
-                        return null;
-                    """, collection_id)
-                    
-                    if link_url:
-                        collection_link = link_url
-                        logger.info(f"Got link from JavaScript: {collection_link}")
-                except Exception as e:
-                    logger.debug(f"Could not get link via JavaScript: {e}")
-                
-                # Пробуем получить из onclick атрибута кнопки
-                if not collection_link:
-                    try:
-                        onclick = link_button.get_attribute("onclick")
-                        if onclick:
-                            logger.info(f"Button onclick: {onclick[:100]}...")
-                            # Функция so_go_collection_link() может содержать ссылку или получать её из данных
-                            # Пробуем извлечь ссылку из onclick
-                            import re
-                            url_match = re.search(r'https?://[^\s\'"<>)]+', onclick)
-                            if url_match:
-                                collection_link = url_match.group(0)
-                                logger.info(f"Found link in onclick: {collection_link}")
-                    except Exception as e:
-                        logger.debug(f"Could not get link from onclick: {e}")
-                
-                # Если не нашли в атрибутах, пробуем кликнуть один раз для получения ссылки из модального окна
-                if not collection_link:
-                    try:
-                        logger.info("Link not found in attributes, clicking button once to get link from modal...")
-                        # Сохраняем текущий URL
-                        url_before = self.driver.current_url
-                        
-                        # Кликаем на кнопку для открытия модального окна
-                        try:
-                            self.driver.execute_script("so_go_collection_link();")
-                            time.sleep(2)
-                        except:
-                            self.driver.execute_script("arguments[0].click();", link_button)
-                            time.sleep(2)
-                        
-                        # Ищем ссылку в модальном окне (НЕ tsum.ru, а ссылку из saas)
-                        try:
-                            modal_inputs = self.driver.find_elements(By.CSS_SELECTOR, "input[type='text'], textarea, input[type='url']")
-                            for input_elem in modal_inputs:
-                                try:
-                                    value = input_elem.get_attribute("value")
-                                    if value and ("http" in value or "www." in value):
-                                        # Пропускаем ссылки на tsum.ru - нужна ссылка из saas
-                                        if "tsum.ru" not in value.lower():
-                                            collection_link = value
-                                            logger.info(f"Found link in modal input: {collection_link}")
-                                            break
-                                except:
-                                    continue
-                            
-                            # Если не нашли в input, пробуем найти в тексте модального окна
-                            if not collection_link:
-                                try:
-                                    modal_elements = self.driver.find_elements(By.CSS_SELECTOR, ".modal, .popup, [class*='modal'], [class*='popup'], [class*='dialog']")
-                                    for modal_elem in modal_elements:
-                                        try:
-                                            modal_html = modal_elem.get_attribute("innerHTML")
-                                            if modal_html:
-                                                import re
-                                                # Ищем все ссылки
-                                                url_matches = re.findall(r'https?://[^\s\'"<>]+', modal_html)
-                                                for url_match in url_matches:
-                                                    # Пропускаем tsum.ru, ищем ссылку из saas (обычно это admin.dresscode.ai или mosaica.ai)
-                                                    if "tsum.ru" not in url_match.lower() and ("dresscode" in url_match.lower() or "mosaica" in url_match.lower() or "admin" in url_match.lower()):
-                                                        collection_link = url_match
-                                                        logger.info(f"Found link in modal text: {collection_link}")
-                                                        break
-                                                if collection_link:
-                                                    break
-                                        except:
-                                            continue
-                                except:
-                                    pass
-                            
-                            # Закрываем модальное окно (если нужно)
-                            try:
-                                # Пробуем найти кнопку закрытия или нажать Escape
-                                close_buttons = self.driver.find_elements(By.CSS_SELECTOR, ".modal-close, .popup-close, [class*='close'], button[class*='close']")
-                                for close_btn in close_buttons:
-                                    try:
-                                        if close_btn.is_displayed():
-                                            self.driver.execute_script("arguments[0].click();", close_btn)
-                                            time.sleep(0.5)
-                                            break
-                                    except:
-                                        continue
-                            except:
-                                pass
-                                
-                        except Exception as e:
-                            logger.warning(f"Error finding link in modal: {e}")
-                    except Exception as e:
-                        logger.warning(f"Error clicking button to get link: {e}")
-                
-                # Пробуем получить из data-атрибутов кнопки
-                if not collection_link:
-                    try:
-                        data_link = (link_button.get_attribute("data-link") or 
-                                   link_button.get_attribute("data-url") or 
-                                   link_button.get_attribute("data-href") or
-                                   link_button.get_attribute("data-collection-link"))
-                        if data_link:
-                            collection_link = data_link
-                            logger.info(f"Found link in data attribute: {collection_link}")
-                    except:
-                        pass
-                
-                # Пробуем получить из href (если кнопка является ссылкой)
-                if not collection_link:
-                    try:
-                        href = link_button.get_attribute("href")
-                        if href:
-                            collection_link = href
-                            logger.info(f"Found link in href: {collection_link}")
-                    except:
-                        pass
-                
-                # Если все еще не нашли, используем формат catalog.dresscode.ai
-                if not collection_link:
-                    collection_link = f"https://catalog.dresscode.ai/collection/{collection_id}"
-                    logger.info(f"Using default catalog.dresscode.ai URL: {collection_link}")
-                
-            except Exception as e:
-                logger.warning(f"Could not find 'saas' button or extract link: {e}")
-                collection_link = f"https://catalog.dresscode.ai/collection/{collection_id}"
-            
-            # Парсим статистику из текста
+            # 7. Парсим статистику из текста
             report_data = {
                 'collection_id': collection_id,
                 'collection_url': collection_link,
@@ -1427,79 +1315,89 @@ class SeleniumCollector:
             import traceback
             logger.error(traceback.format_exc())
             return None
-            
-            # Парсим статистику из текста
-            report_data = {
-                'collection_id': collection_id,
-                'collection_url': collection_link,
-                'stats_text': stats_text,
-                'total_done': None,
-                'combo_items': None,
-                'total_done_items': None,
-            }
-            
-            if stats_text:
-                # Парсим данные из текста статистики
-                # Формат 1: "442 total done items 326 combinations done"
-                # Формат 2: "Общее количество уникальных done-айтемов – 441\nИз них combo-айтемов – 326\nИтого total done - 767 айтемов"
-                try:
-                    import re
-                    
-                    # Пробуем найти паттерны в тексте
-                    # Паттерн 1: "X total done" или "X total done items"
-                    total_done_match = re.search(r'(\d+)\s+total\s+done', stats_text, re.IGNORECASE)
-                    if total_done_match:
-                        report_data['total_done'] = int(total_done_match.group(1))
-                    
-                    # Паттерн 2: "X combinations done" или "X combo"
-                    combo_match = re.search(r'(\d+)\s+(?:combinations?|combo)', stats_text, re.IGNORECASE)
-                    if combo_match:
-                        report_data['combo_items'] = int(combo_match.group(1))
-                    
-                    # Паттерн 3: "Итого total done - X айтемов"
-                    total_match = re.search(r'Итого\s+total\s+done\s*[-–]\s*(\d+)', stats_text, re.IGNORECASE)
-                    if total_match:
-                        report_data['total_done_items'] = int(total_match.group(1))
-                    
-                    # Паттерн 4: "Общее количество уникальных done-айтемов – X"
-                    unique_match = re.search(r'Общее\s+количество\s+уникальных\s+done-айтемов\s*[–-]\s*(\d+)', stats_text, re.IGNORECASE)
-                    if unique_match:
-                        report_data['total_done'] = int(unique_match.group(1))
-                    
-                    # Паттерн 5: "Из них combo-айтемов – X"
-                    combo_ru_match = re.search(r'Из\s+них\s+combo-айтемов\s*[–-]\s*(\d+)', stats_text, re.IGNORECASE)
-                    if combo_ru_match:
-                        report_data['combo_items'] = int(combo_ru_match.group(1))
-                    
-                    # Если не нашли через паттерны, пробуем просто найти все числа
-                    if not report_data['total_done'] or not report_data['combo_items']:
-                        numbers = re.findall(r'\d+', stats_text)
-                        if len(numbers) >= 2:
-                            if not report_data['total_done']:
-                                report_data['total_done'] = int(numbers[0])
-                            if not report_data['combo_items']:
-                                report_data['combo_items'] = int(numbers[1])
-                    
-                    # Вычисляем total_done_items если не указан
-                    if not report_data['total_done_items']:
-                        if report_data['total_done'] and report_data['combo_items']:
-                            report_data['total_done_items'] = report_data['total_done'] + report_data['combo_items']
-                    
-                except Exception as e:
-                    logger.warning(f"Error parsing stats: {e}")
-            
-            return report_data
-            
-        except Exception as e:
-            logger.error(f"Error getting collection report: {e}")
-            return None
     
     def close(self):
-        """Закрытие браузера"""
+        """Закрытие браузера и всех связанных процессов"""
         if self.driver:
             try:
-                self.driver.quit()
+                # Закрываем все окна браузера
+                try:
+                    self.driver.close()
+                except:
+                    pass
+                
+                # Завершаем драйвер
+                try:
+                    self.driver.quit()
+                except:
+                    pass
+                
+                self.driver = None  # Помечаем как закрытый
                 logger.info("Browser closed")
-            except:
-                pass
+                
+                # Дополнительно: принудительно убиваем процессы Chrome
+                # Это важно, так как иногда driver.quit() не убивает все процессы
+                try:
+                    import subprocess
+                    import time
+                    time.sleep(1)  # Даем время на закрытие
+                    
+                    # Убиваем процессы Chrome более агрессивно
+                    # Пробуем разные способы для надежности
+                    try:
+                        # Способ 1: pkill по имени процесса
+                        subprocess.run(['pkill', '-9', '-f', 'chrome'], 
+                                     capture_output=True, 
+                                     timeout=3,
+                                     check=False)
+                    except:
+                        pass
+                    
+                    try:
+                        # Способ 2: killall (если доступен)
+                        subprocess.run(['killall', '-9', 'chrome'], 
+                                     capture_output=True, 
+                                     timeout=3,
+                                     check=False)
+                    except:
+                        pass
+                    
+                    try:
+                        # Способ 3: через ps и kill
+                        result = subprocess.run(['ps', 'aux'], 
+                                              capture_output=True, 
+                                              text=True,
+                                              timeout=3)
+                        if result.returncode == 0:
+                            for line in result.stdout.split('\n'):
+                                if 'chrome' in line.lower() and 'grep' not in line.lower():
+                                    parts = line.split()
+                                    if len(parts) > 1:
+                                        pid = parts[1]
+                                        try:
+                                            subprocess.run(['kill', '-9', pid], 
+                                                         capture_output=True, 
+                                                         timeout=2,
+                                                         check=False)
+                                        except:
+                                            pass
+                    except:
+                        pass
+                        
+                except Exception as e:
+                    logger.debug(f"Could not kill Chrome processes: {e}")
+                    
+            except Exception as e:
+                # Браузер уже может быть закрыт
+                logger.debug(f"Browser already closed or error closing: {e}")
+                self.driver = None
+                # Пробуем принудительно убить процессы Chrome
+                try:
+                    import subprocess
+                    subprocess.run(['pkill', '-9', '-f', 'chrome'], 
+                                 capture_output=True, 
+                                 timeout=3,
+                                 check=False)
+                except:
+                    pass
 

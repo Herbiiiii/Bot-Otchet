@@ -16,6 +16,8 @@ class StatusTracker:
         self.bq_client = BigQueryClient(GOOGLE_APPLICATION_CREDENTIALS_JSON, BIGQUERY_PROJECT_ID)
         self.status_file = Path(COLLECTIONS_STATUS_FILE)
         self._load_cached_statuses()
+        # Флаг для отслеживания первой загрузки (чтобы не отправлять отчеты при перезапуске)
+        self.is_first_run = len(self.cached_statuses) == 0
     
     def _load_cached_statuses(self):
         """Загружает кэшированные статусы из файла"""
@@ -67,8 +69,11 @@ class StatusTracker:
                 current_status_normalized = current_status.strip().lower()
                 cached_status_normalized = cached_status.strip().lower()
                 
-                if current_status_normalized == 'tsum cs' and cached_status_normalized != 'tsum cs':
-                    # Статус изменился на 'tsum cs'
+                # Если это первый запуск (кэш был пустой), просто обновляем кэш без отправки отчетов
+                if self.is_first_run:
+                    logger.info(f"First run: caching collection {collection_id} ({collection.get('collection_name', '')}) with status 'tsum cs'")
+                elif current_status_normalized == 'tsum cs' and cached_status_normalized != 'tsum cs':
+                    # Статус изменился на 'tsum cs' (и это не первый запуск)
                     changed_collections.append(collection)
                     logger.info(f"Collection {collection_id} ({collection.get('collection_name', '')}) status changed to 'tsum cs'")
                 
@@ -78,6 +83,11 @@ class StatusTracker:
                     'collection_name': collection.get('collection_name', ''),
                     'last_checked': datetime.now().isoformat()
                 }
+            
+            # После первой проверки сбрасываем флаг
+            if self.is_first_run:
+                self.is_first_run = False
+                logger.info("First run completed, cache initialized. Future status changes will trigger reports.")
             
             # Удаляем из кэша коллекции, которые больше не имеют статус 'tsum cs'
             # (чтобы не накапливались коллекции без статуса)

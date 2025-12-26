@@ -46,15 +46,39 @@ async def generate_report(update: Update, context: ContextTypes.DEFAULT_TYPE, co
                     pass
             return
     
+    # СНАЧАЛА показываем промежуточное сообщение сразу, чтобы пользователь видел реакцию
+    loading_text = f"⏳ Собираю отчет по коллекции {collection_id}...\nЭто может занять некоторое время."
+    
+    if edit_message:
+        try:
+            await edit_message.edit_text(loading_text)
+            loading_msg = edit_message
+        except:
+            if update.message:
+                loading_msg = await update.message.reply_text(loading_text)
+            else:
+                return
+    elif update.message:
+        loading_msg = await update.message.reply_text(loading_text)
+        try:
+            await update.message.delete()
+        except:
+            pass
+    else:
+        return
+    
     try:
-        # Получаем информацию о коллекции для промежуточного сообщения
+        # ТЕПЕРЬ получаем информацию о коллекции (после показа сообщения)
+        import asyncio
         from services.bq_client import BigQueryClient
         from config.settings import BIGQUERY_PROJECT_ID, GOOGLE_APPLICATION_CREDENTIALS_JSON
         from handlers.commands import shorten_collection_name
         
+        # Выполняем запрос к BigQuery в отдельном потоке, чтобы не блокировать event loop
         bq_client = BigQueryClient(GOOGLE_APPLICATION_CREDENTIALS_JSON, BIGQUERY_PROJECT_ID)
-        collection = bq_client.get_collection_by_id(collection_id)
+        collection = await asyncio.to_thread(bq_client.get_collection_by_id, collection_id)
         
+        # Обновляем сообщение с информацией о коллекции, если она найдена
         if collection:
             collection_name = collection.get('collection_name', 'Без названия')
             short_name = shorten_collection_name(collection_name)
@@ -62,7 +86,7 @@ async def generate_report(update: Update, context: ContextTypes.DEFAULT_TYPE, co
             created_at = collection.get('created_at', 'Не указано')
             updated_at = collection.get('updated_at', 'Не указано')
             
-            # Формируем промежуточное сообщение с информацией о коллекции
+            # Обновляем промежуточное сообщение с информацией о коллекции
             loading_text = (
                 f"📊 Коллекция: {short_name}\n\n"
                 f"ID: {collection_id}\n"
@@ -71,26 +95,10 @@ async def generate_report(update: Update, context: ContextTypes.DEFAULT_TYPE, co
                 f"Обновлена: {updated_at}\n\n"
                 f"⏳ Собираю отчет... Это может занять некоторое время."
             )
-        else:
-            loading_text = f"⏳ Собираю отчет по коллекции {collection_id}...\nЭто может занять некоторое время."
-        
-        if edit_message:
             try:
-                await edit_message.edit_text(loading_text)
-                loading_msg = edit_message
-            except:
-                if update.message:
-                    loading_msg = await update.message.reply_text(loading_text)
-                else:
-                    return
-        elif update.message:
-            loading_msg = await update.message.reply_text(loading_text)
-            try:
-                await update.message.delete()
+                await loading_msg.edit_text(loading_text)
             except:
                 pass
-        else:
-            return
         
         # Проверяем, что email и password заданы
         if not ADMIN_EMAIL or not ADMIN_PASSWORD:
@@ -98,72 +106,78 @@ async def generate_report(update: Update, context: ContextTypes.DEFAULT_TYPE, co
             await loading_msg.edit_text(error_msg)
             return
         
-        # Инициализируем Selenium коллектор
-        collector = SeleniumCollector(ADMIN_EMAIL, ADMIN_PASSWORD)
+        # Выполняем тяжелые операции Selenium в отдельном потоке, чтобы не блокировать event loop
+        def collect_report():
+            """Синхронная функция для сбора отчета"""
+            collector = SeleniumCollector(ADMIN_EMAIL, ADMIN_PASSWORD)
+            try:
+                # Входим в Мозаику
+                if not collector.login():
+                    return None, "❌ Не удалось войти в Мозаику. Проверьте учетные данные."
+                
+                # Собираем отчет
+                report = collector.get_collection_report(collection_id)
+                return report, None
+            finally:
+                collector.close()
         
-        try:
-            # Входим в Мозаику
-            if not collector.login():
-                error_msg = "❌ Не удалось войти в Мозаику. Проверьте учетные данные."
-                await loading_msg.edit_text(error_msg)
-                return
-            
-            # Собираем отчет
-            report = collector.get_collection_report(collection_id)
-            
-            if not report:
-                error_msg = f"❌ Не удалось собрать отчет по коллекции {collection_id}."
-                await loading_msg.edit_text(error_msg)
-                return
-            
-            # Используем уже полученную информацию о коллекции
-            if not collection:
-                collection = bq_client.get_collection_by_id(collection_id)
-            
-            collection_name = collection.get('collection_name', 'Без названия') if collection else 'Без названия'
-            
-            # Формируем ссылку в формате catalog.dresscode.ai
-            collection_url = f"https://catalog.dresscode.ai/collection/{collection_id}"
-            # Если в отчете есть ссылка и она не tsum.ru, используем её
-            if report.get('collection_url') and 'tsum.ru' not in report.get('collection_url', '').lower():
-                collection_url = report['collection_url']
-            
-            # Формируем сообщение с отчетом в формате как на фото
-            # Формат:
-            # "Добрый вечер!\n"
-            # "\n"
-            # "Направляем пак {полное название коллекции}\n"
-            # "{ссылка}\n"
-            # "\n"
-            # "Статистика..."
-            
-            # Формируем сообщение
-            message = "Добрый вечер!\n"
-            message += "\n"
-            message += f"Направляем пак {collection_name}\n"
-            message += f"{collection_url}\n"
-            message += "\n"
-            
-            # Добавляем статистику
-            total_done = report.get('total_done', 0) or 0
-            combo_items = report.get('combo_items', 0) or 0
-            
-            if total_done:
-                message += f"Общее количество уникальных done-айтемов - {total_done}\n"
-            
-            if combo_items:
-                message += f"Из них combo-айтемов – {combo_items}\n"
-            
-            # Рассчитываем "Итого total done" = total_done + combo_items
-            total_done_items = total_done + combo_items
-            if total_done_items > 0:
-                message += f"Итого total done - {total_done_items} айтемов"
-            
-            # Редактируем существующее сообщение с отчетом
-            await loading_msg.edit_text(message)
-            
-        finally:
-            collector.close()
+        # Выполняем сбор отчета в отдельном потоке
+        report, error_msg = await asyncio.to_thread(collect_report)
+        
+        if error_msg:
+            await loading_msg.edit_text(error_msg)
+            return
+        
+        if not report:
+            error_msg = f"❌ Не удалось собрать отчет по коллекции {collection_id}."
+            await loading_msg.edit_text(error_msg)
+            return
+        
+        # Используем уже полученную информацию о коллекции
+        if not collection:
+            collection = await asyncio.to_thread(bq_client.get_collection_by_id, collection_id)
+        
+        collection_name = collection.get('collection_name', 'Без названия') if collection else 'Без названия'
+        
+        # Формируем ссылку в формате admin.dresscode.ai
+        collection_url = f"https://admin.dresscode.ai/collection/{collection_id}"
+        
+        # Формируем сообщение с отчетом в формате как на фото
+        # Формат:
+        # "Добрый вечер!\n"
+        # "\n"
+        # "Направляем пак {полное название коллекции}\n"
+        # "{ссылка}\n"
+        # "\n"
+        # "Статистика..."
+        
+        # Формируем сообщение с HTML форматированием для кликабельной ссылки
+        # Экранируем специальные символы HTML в названии коллекции и делаем жирным
+        from html import escape
+        escaped_name = escape(collection_name)
+        message = "Добрый вечер!\n"
+        message += "\n"
+        message += f"Направляем пак <b>{escaped_name}</b>\n"
+        message += f"<a href=\"{collection_url}\">{collection_url}</a>\n"
+        message += "\n"
+        
+        # Добавляем статистику
+        total_done = report.get('total_done', 0) or 0
+        combo_items = report.get('combo_items', 0) or 0
+        
+        if total_done:
+            message += f"Общее количество уникальных done-айтемов - {total_done}\n"
+        
+        if combo_items:
+            message += f"Из них combo-айтемов – {combo_items}\n"
+        
+        # Рассчитываем "Итого total done" = total_done + combo_items
+        total_done_items = total_done + combo_items
+        if total_done_items > 0:
+            message += f"Итого total done - {total_done_items} айтемов"
+        
+        # Редактируем существующее сообщение с отчетом (используем HTML для кликабельной ссылки)
+        await loading_msg.edit_text(message, parse_mode='HTML')
             
     except Exception as e:
         logger.error(f"Error generating report: {e}")
