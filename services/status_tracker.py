@@ -48,10 +48,13 @@ class StatusTracker:
             Список коллекций, у которых статус изменился на 'tsum cs'
         """
         try:
-            # Получаем все коллекции из BigQuery
-            collections = self.bq_client.get_all_collections()
+            # Получаем ТОЛЬКО коллекции со статусом 'tsum cs' из BigQuery
+            collections = self.bq_client.get_collections_with_status('tsum cs')
             
             changed_collections = []
+            
+            # Получаем список ID коллекций со статусом 'tsum cs' для очистки кэша
+            tsum_cs_collection_ids = {col['collection_id'] for col in collections}
             
             for collection in collections:
                 collection_id = collection['collection_id']
@@ -69,12 +72,23 @@ class StatusTracker:
                     changed_collections.append(collection)
                     logger.info(f"Collection {collection_id} ({collection.get('collection_name', '')}) status changed to 'tsum cs'")
                 
-                # Обновляем кэш
+                # Обновляем кэш ТОЛЬКО для коллекций со статусом 'tsum cs'
                 self.cached_statuses[collection_id] = {
                     'status': current_status,
                     'collection_name': collection.get('collection_name', ''),
                     'last_checked': datetime.now().isoformat()
                 }
+            
+            # Удаляем из кэша коллекции, которые больше не имеют статус 'tsum cs'
+            # (чтобы не накапливались коллекции без статуса)
+            collections_to_remove = []
+            for collection_id in self.cached_statuses.keys():
+                if collection_id not in tsum_cs_collection_ids:
+                    collections_to_remove.append(collection_id)
+            
+            for collection_id in collections_to_remove:
+                del self.cached_statuses[collection_id]
+                logger.debug(f"Removed collection {collection_id} from cache (no longer 'tsum cs')")
             
             # Сохраняем обновленные статусы
             self._save_cached_statuses()

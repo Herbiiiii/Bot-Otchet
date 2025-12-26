@@ -1,12 +1,10 @@
 import logging
-import json
-from pathlib import Path
 from typing import List, Dict
 from telegram import Bot
-from config.settings import CHATS_FILE
 from services.selenium_collector import SeleniumCollector
 from services.bq_client import BigQueryClient
 from config.settings import ADMIN_EMAIL, ADMIN_PASSWORD, BIGQUERY_PROJECT_ID, GOOGLE_APPLICATION_CREDENTIALS_JSON
+from services.chat_manager import get_active_chats
 
 logger = logging.getLogger(__name__)
 
@@ -21,30 +19,6 @@ class ReportSender:
             bot: Экземпляр Telegram бота
         """
         self.bot = bot
-        self.chats_file = Path(CHATS_FILE)
-    
-    def get_active_chats(self) -> List[Dict]:
-        """
-        Получает список активных бесед для отправки отчетов
-        
-        Returns:
-            Список словарей с информацией о беседах
-        """
-        try:
-            if not self.chats_file.exists():
-                return []
-            
-            with open(self.chats_file, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-                chats = data.get('chats', [])
-                
-                # Фильтруем только активные беседы
-                active_chats = [chat for chat in chats if chat.get('is_active', True)]
-                return active_chats
-                
-        except Exception as e:
-            logger.error(f"Error getting active chats: {e}")
-            return []
     
     async def send_report_to_chats(self, collection_id: str, collection_name: str = None):
         """
@@ -110,7 +84,7 @@ class ReportSender:
                     message += f"Итого total done - {total_done_items} айтемов"
                 
                 # Отправляем во все активные беседы
-                chats = self.get_active_chats()
+                chats = get_active_chats()
                 
                 for chat in chats:
                     chat_id = chat.get('chat_id')

@@ -630,6 +630,38 @@ class SeleniumCollector:
             logger.debug(f"Error handling Chrome sign-in modal: {e}")
             return False
     
+    def _clean_stats_text(self, stats_text: str) -> str:
+        """
+        Очищает текст статистики от шапки и яндекс ссылок.
+        
+        Args:
+            stats_text: Исходный текст статистики из textarea
+            
+        Returns:
+            Очищенный текст статистики
+        """
+        if not stats_text:
+            return stats_text
+        
+        lines = stats_text.split('\n')
+        cleaned_lines = []
+        
+        for i, line in enumerate(lines):
+            # Пропускаем первую строку (шапку с заголовками)
+            if i == 0:
+                # Проверяем, является ли это шапкой (содержит разделители типа "_; Name; Brand; Article; Gender; Image2; Ext Images; Color; Category: Description; tags; links")
+                if '_;' in line or 'Name;' in line or 'Brand;' in line or 'Article;' in line:
+                    continue
+            
+            # Пропускаем строки с яндекс ссылками
+            if 'disk.yandex.ru' in line or 'https://disk.yandex.ru' in line:
+                continue
+            
+            # Добавляем остальные строки
+            cleaned_lines.append(line)
+        
+        return '\n'.join(cleaned_lines).strip()
+    
     def navigate_to_showoff_collections(self) -> bool:
         """
         Переход в раздел Showoff Collections через вызов JavaScript функции view_custom_collections()
@@ -1118,6 +1150,9 @@ class SeleniumCollector:
                         EC.presence_of_element_located((By.ID, "so_coll_stat"))
                     )
                     stats_text = stat_textarea.get_attribute("value") or stat_textarea.text
+                    # Очищаем от шапки и яндекс ссылок
+                    if stats_text:
+                        stats_text = self._clean_stats_text(stats_text)
                     logger.info(f"Found stats text: {stats_text[:100] if stats_text else 'None'}...")
                 except Exception as e:
                     logger.error(f"Could not find stats textarea (so_coll_stat): {e}")
@@ -1125,6 +1160,9 @@ class SeleniumCollector:
                     try:
                         stat_textarea = self.driver.find_element(By.XPATH, '//textarea[@id="so_coll_stat"]')
                         stats_text = stat_textarea.get_attribute("value") or stat_textarea.text
+                        # Очищаем от шапки и яндекс ссылок
+                        if stats_text:
+                            stats_text = self._clean_stats_text(stats_text)
                         logger.info(f"Found stats text via XPath: {stats_text[:100] if stats_text else 'None'}...")
                     except:
                         logger.error("Could not find stats textarea by any method")

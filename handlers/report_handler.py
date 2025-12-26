@@ -182,13 +182,13 @@ async def handle_report_callback(update: Update, context: ContextTypes.DEFAULT_T
     
     if query.data and query.data.startswith("report_"):
         collection_id = query.data.replace("report_", "")
-        # Используем query.message вместо update.message для callback
+        # Используем query.from_user (пользователь, который нажал на кнопку), а не query.message.from_user (бот)
         class FakeUpdate:
-            def __init__(self, msg):
+            def __init__(self, query_obj):
                 self.message = None
-                self.effective_user = msg.from_user
-                self.effective_chat = msg.chat
+                self.effective_user = query_obj.from_user  # Пользователь, который нажал на кнопку
+                self.effective_chat = query_obj.message.chat if query_obj.message else None
         
-        fake_update = FakeUpdate(query.message)
+        fake_update = FakeUpdate(query)
         await generate_report(fake_update, context, collection_id, edit_message=query.message)
 

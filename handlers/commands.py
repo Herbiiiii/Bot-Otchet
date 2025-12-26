@@ -62,8 +62,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Доступные команды:\n"
         "/collections - Показать все коллекции\n"
         "/collections_tsum - Показать коллекции со статусом 'tsum cs'\n"
-        "/status <collection_id> - Показать статус коллекции\n"
-        "/help - Справка"
+        "/status <collection_id> - Показать статус коллекции"
     )
     
     try:
@@ -136,6 +135,17 @@ async def show_collections(update: Update, context: ContextTypes.DEFAULT_TYPE, f
         # Инициализируем user_data если его нет
         if not hasattr(context, 'user_data'):
             context.user_data = {}
+        
+        # Очищаем кэш если фильтр изменился или это прямой вызов команды
+        cached_filter = context.user_data.get('filter_status')
+        # Если это прямой вызов команды (не через callback), всегда очищаем кэш
+        is_direct_command = update.message is not None
+        if is_direct_command or cached_filter != filter_status:
+            # Фильтр изменился или прямой вызов команды, нужно перезагрузить коллекции
+            if 'collections' in context.user_data:
+                del context.user_data['collections']
+            if 'filter_status' in context.user_data:
+                del context.user_data['filter_status']
         
         # Сохраняем коллекции в context для пагинации
         if 'collections' not in context.user_data:
@@ -220,25 +230,33 @@ async def show_collections(update: Update, context: ContextTypes.DEFAULT_TYPE, f
         # Кнопки навигации
         nav_row = []
         
-        # Кнопка "Предыдущая"
+        # Шаг перехода - 5 страниц (или меньше, если до конца меньше 5)
+        PAGE_STEP = 5
+        
+        # Кнопка "Назад" - переходит на 5 страниц назад
+        prev_page = max(0, page - PAGE_STEP)
         if page > 0:
-            nav_row.append(InlineKeyboardButton("◀️ Предыдущая", callback_data=f"page_{page-1}_{filter_status or 'all'}"))
+            nav_row.append(InlineKeyboardButton("◀️ Назад", callback_data=f"page_{prev_page}_{filter_status or 'all'}"))
         
         # Кнопка с номером страницы
         nav_row.append(InlineKeyboardButton(f"📄 {page+1}/{total_pages}", callback_data="page_info"))
         
-        # Кнопка "Следующая"
+        # Кнопка "Вперед" - переходит на 5 страниц вперед
+        next_page = min(total_pages - 1, page + PAGE_STEP)
         if page < total_pages - 1:
-            nav_row.append(InlineKeyboardButton("Следующая ▶️", callback_data=f"page_{page+1}_{filter_status or 'all'}"))
+            nav_row.append(InlineKeyboardButton("Вперед ▶️", callback_data=f"page_{next_page}_{filter_status or 'all'}"))
         
         keyboard.append(nav_row)
         
-        # Быстрые кнопки перехода на страницы (первые 5 страниц)
+        # Быстрые кнопки с номерами страниц в текущем диапазоне (текущая и следующие 4)
         if total_pages > 1:
             quick_nav = []
-            max_quick_pages = min(5, total_pages)
-            for p in range(max_quick_pages):
-                if p != page:  # Не показываем текущую страницу
+            # Показываем текущую страницу и следующие 4 страницы (всего до 5 кнопок)
+            max_quick_pages = min(5, total_pages - page)
+            for i in range(max_quick_pages):
+                p = page + i
+                if p < total_pages:
+                    # Текущая страница будет первой в списке
                     quick_nav.append(InlineKeyboardButton(str(p+1), callback_data=f"page_{p}_{filter_status or 'all'}"))
             if quick_nav:
                 keyboard.append(quick_nav)
@@ -248,23 +266,8 @@ async def show_collections(update: Update, context: ContextTypes.DEFAULT_TYPE, f
         
         reply_markup = InlineKeyboardMarkup(keyboard)
         
-        # Формируем текст сообщения
-        if filter_status:
-            message_text = f"📋 Коллекции со статусом '{filter_status}':\n\n"
-        else:
-            message_text = "📋 Все коллекции:\n\n"
-        
-        message_text += f"Всего: {len(collections)} коллекций | Страница {page+1}/{total_pages}\n\n"
-        
-        # Показываем коллекции текущей страницы в тексте
-        for idx, coll in enumerate(page_collections, start=start_idx+1):
-            name = coll.get('collection_name', 'Без названия')
-            short_name = shorten_collection_name(name)
-            status = coll.get('status', 'не указан')
-            coll_id = coll['collection_id']
-            # Сокращаем ID для отображения
-            short_id = coll_id[:12] + "..." if len(coll_id) > 16 else coll_id
-            message_text += f"{idx}. {short_name}\n   ID: {short_id} | Статус: {status}\n\n"
+        # Текст сообщения - минимальный (Telegram требует непустой текст)
+        message_text = f"Страница {page+1}/{total_pages}"
         
         # Редактируем существующее сообщение или создаем новое
         if edit_message:
@@ -436,13 +439,14 @@ async def show_collection_info(query, collection_id: str, context: ContextTypes.
         from telegram import Update
         
         # Создаем фейковый update для передачи в generate_report
+        # Используем query.from_user (пользователь, который нажал на кнопку), а не query.message.from_user (бот)
         class FakeUpdate:
-            def __init__(self, msg):
+            def __init__(self, query_obj):
                 self.message = None
-                self.effective_user = msg.from_user
-                self.effective_chat = msg.chat
+                self.effective_user = query_obj.from_user  # Пользователь, который нажал на кнопку
+                self.effective_chat = query_obj.message.chat if query_obj.message else None
         
-        fake_update = FakeUpdate(query.message)
+        fake_update = FakeUpdate(query)
         
         # Запускаем сбор отчета сразу
         await generate_report(fake_update, context, collection_id, edit_message=query.message)

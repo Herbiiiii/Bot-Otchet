@@ -189,7 +189,7 @@ class BigQueryClient:
     
     def get_all_collections(self) -> List[Dict]:
         """
-        Получает все коллекции компании tsum_cs
+        Получает ВСЕ коллекции из базы данных (без фильтров)
         
         Returns:
             Список словарей с информацией о коллекциях
@@ -204,7 +204,6 @@ class BigQueryClient:
             created_at,
             updated_at
         FROM `{BIGQUERY_TABLE_COLLECTIONS}`
-        WHERE company_id = 'tsum_cs'
         ORDER BY created_at DESC
         """
         
